@@ -1,0 +1,146 @@
+/* File: styles.css */
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: sans-serif; display: flex; height: 100vh; }
+
+/* ===== Sidebar ===== */
+#sidebar {
+  width: 380px; padding: 10px; border-right: 1px solid #ccc;
+  background: #f7f7f7;
+  display: flex; flex-direction: column;
+}
+#sidebar h2 { font-size: 14px; margin-bottom: 6px; }
+#hover-label {
+  font-size: 13px; font-weight: bold; color: #333;
+  min-height: 18px; margin-bottom: 4px;
+}
+
+#grid-scroll {
+  flex: 1; overflow: auto; background: white;
+  border: 1px solid #bbb;
+  position: relative;
+}
+#grid-container { display: inline-block; position: relative; }
+
+.grid-table {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  grid-template-rows: auto 1fr;
+  gap: 2px;
+}
+.grid-corner {
+  position: sticky; top: 0; left: 0; z-index: 3;
+  background: #f7f7f7;
+  width: 26px; height: 18px;
+}
+.grid-header-k {
+  position: sticky; top: 0; z-index: 2;
+  background: #f7f7f7;
+  display: grid; gap: 1px;
+}
+.grid-header-n {
+  position: sticky; left: 0; z-index: 2;
+  background: #f7f7f7;
+  display: grid; gap: 1px;
+}
+.grid-body-wrapper { position: relative; }
+.grid { display: grid; gap: 1px; background: #999; }
+
+/* ===== Cells ===== */
+.cell {
+  width: 16px; height: 16px;
+  background: #ddd; cursor: default;
+  position: relative;
+}
+.cell.ok { background: #6ab04c; cursor: pointer; }
+.cell.singular { background: #e67e22; }
+.cell.timeout, .cell.crashed, .cell.error { background: #c0392b; }
+.cell.selected { outline: 2px solid #000; outline-offset: -1px; z-index: 2; }
+.cell.zero-axis-col { border-left: 2px solid #00f; }
+.cell.zero-axis-row { border-top:  2px solid #0a0; }
+
+/* 全符号一致解あり: 左上隅に黒い直角三角形 (辺長 = セル辺 × 50%) */
+.cell.has-same-sign::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0;
+  width: 50%; height: 50%;
+  background: #000;
+  clip-path: polygon(0 0, 100% 0, 0 100%);
+  pointer-events: none;
+}
+
+.axisnum {
+  font-size: 9px; color: #555; background: #f7f7f7;
+  display: flex; align-items: center; justify-content: center;
+}
+.axisnum.col { width: 16px; height: 14px; }
+.axisnum.row { width: 22px; height: 16px; }
+.axisnum.zero-k { background: #e0e0ff; font-weight: bold; }
+.axisnum.zero-n { background: #e0ffe0; font-weight: bold; }
+
+/* ===== Legend ===== */
+.legend-cell {
+  margin-top: 8px; font-size: 11px;
+  background: white; padding: 8px; border: 1px solid #ddd;
+  flex-shrink: 0;
+}
+.legend-cell div { margin-bottom: 4px; }
+.legend-cell .legend-deco { margin-top: 6px; position: relative; padding-left: 18px; }
+.swatch {
+  display: inline-block; width: 12px; height: 12px;
+  vertical-align: middle; margin-right: 4px;
+}
+.swatch.circle  { border-radius: 50%; }
+.swatch.diamond { transform: rotate(45deg); }
+.swatch.cross   { background: #ff9e3d;
+                  clip-path: polygon(40% 0,60% 0,60% 40%,100% 40%,100% 60%,60% 60%,60% 100%,40% 100%,40% 60%,0 60%,0 40%,40% 40%); }
+.swatch.square  { /* default rectangle */ }
+.swatch.tri     { clip-path: polygon(50% 0, 100% 100%, 0 100%); }
+.swatch-tri {
+  display: inline-block; position: absolute; left: 0; top: 1px;
+  width: 12px; height: 12px; background: #000;
+  clip-path: polygon(0 0, 100% 0, 0 100%);
+}
+
+/* ===== Main / Plot ===== */
+#main {
+  flex: 1; display: flex; flex-direction: column;
+  min-width: 0; overflow: hidden;
+}
+#plot-row { flex: 1; display: flex; min-height: 0; min-width: 0; }
+#plot { flex: 1; background: white; min-width: 0; }
+
+#plot-side {
+  width: 200px; padding: 10px;
+  border-left: 1px solid #ccc; background: #fafafa;
+  font-size: 11px;
+  display: flex; flex-direction: column; gap: 10px;
+}
+.panel-block {
+  background: white; padding: 8px; border: 1px solid #ddd;
+}
+.panel-block b { display: block; margin-bottom: 4px; font-size: 12px; }
+.panel-block div { margin-bottom: 3px; }
+.panel-block .hint { font-size: 10px; color: #777; margin-top: 4px; }
+
+.scale-ctrl label { display: block; margin-bottom: 4px; }
+.scale-ctrl button {
+  margin-right: 4px; padding: 2px 6px; font-size: 11px;
+  cursor: pointer;
+}
+.scale-ctrl button.active {
+  background: #555; color: white; border: 1px solid #333;
+}
+#reset-view { margin-top: 6px; width: 100%; padding: 4px; cursor: pointer; }
+
+#info {
+  height: 220px; padding: 10px;
+  border-top: 1px solid #ccc; background: #fafafa;
+  overflow: auto;
+  font-family: monospace; font-size: 12px;
+  white-space: pre-wrap; min-width: 0;
+}
+#info hr { margin: 6px 0; }
+.info-label { color: #888; }
+.info-section { margin-top: 4px; }
+.proof-note { color: #888; font-size: 11px; margin-top: 4px; }

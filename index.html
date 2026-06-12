@@ -1,0 +1,72 @@
+<!-- File: index.html -->
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>楕円曲線ビューア v2</title>
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<div id="sidebar">
+  <h2>(k, N) 選択</h2>
+  <div id="hover-label">マウスを乗せると座標表示</div>
+
+  <div id="grid-scroll">
+    <div id="grid-container"></div>
+  </div>
+
+  <div class="legend-cell">
+    <b>セル状態</b>
+    <div><span class="swatch" style="background:#6ab04c"></span>ok (クリック可)</div>
+    <div><span class="swatch" style="background:#e67e22"></span>singular</div>
+    <div><span class="swatch" style="background:#c0392b"></span>timeout / crashed / error</div>
+    <div><span class="swatch" style="background:#ddd"></span>DB に無し</div>
+    <div class="legend-deco">
+      <span class="swatch-tri"></span>左上の黒三角: 全符号一致の有理点を持つ
+    </div>
+  </div>
+</div>
+
+<div id="main">
+  <div id="plot-row">
+    <svg id="plot"></svg>
+    <div id="plot-side">
+
+      <div class="panel-block scale-ctrl">
+        <b>スケール</b>
+        <label>X軸:
+          <button data-axis="x" data-mode="linear" class="active">線形</button>
+          <button data-axis="x" data-mode="symlog">symlog</button>
+        </label>
+        <label>Y軸:
+          <button data-axis="y" data-mode="linear" class="active">線形</button>
+          <button data-axis="y" data-mode="symlog">symlog</button>
+        </label>
+        <div class="hint">symlog: 0 近傍は線形、外側は対数</div>
+        <button id="reset-view">ビューを初期化</button>
+      </div>
+
+      <div class="panel-block">
+        <b>点の種類</b>
+        <div><span class="swatch circle" style="background:#d62728"></span>自由部分の生成元 +P_i</div>
+        <div><span class="swatch cross"  style="background:#ff9e3d"></span>自由部分の線形結合</div>
+        <div><span class="swatch diamond" style="background:#1f77b4"></span>ねじれ生成元 T_j</div>
+        <div><span class="swatch square"  style="background:#88c0d0"></span>その他のねじれ点</div>
+        <div><span class="swatch tri"     style="background:#9467bd"></span>自由+ねじれ (mixed)</div>
+        <div class="hint">黒太枠: a, b, c が全て同符号</div>
+      </div>
+
+    </div>
+  </div>
+  <div id="info">
+    <div id="curve-info"><i>(k, N) を選択してください</i></div>
+    <hr>
+    <div id="pt-info"><i>点をクリックすると詳細を表示</i></div>
+  </div>
+</div>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>
