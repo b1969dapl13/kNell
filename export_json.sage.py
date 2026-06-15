@@ -1,10 +1,16 @@
 # File: export_json.sage.py
 """
-elliptic_curves.db から個別曲線JSONとindex.jsonを生成する (v2)。
+elliptic_curves.db から個別曲線JSONとindex.jsonを生成する (v3)。
+
+v3 変更点:
+- k>0, N>0 のとき、a:b:c が全て正となる有理点を見つけるため adaptive 探索を実装
+- 卵成分（E(R) の有界連結成分）に乗る点が生成可能なら、M を拡張して粘る
+- 卵成分判定は短形式 Y^2 = X^3 + AX + B に変換後、Q 演算のみで厳密に判定
 
 使い方:
     sage -python export_json.sage.py --db elliptic_curves.db --out data/
     sage -python export_json.sage.py --db elliptic_curves.db --out data/ --target-points 100
+    sage -python export_json.sage.py --db elliptic_curves.db --out data/ --m-extended-max 15
 """
 import cmath
 import math
@@ -18,7 +24,7 @@ import sqlite3
 from fractions import Fraction
 from itertools import product
 from math import ceil, gcd
-from sage.all import EllipticCurve, QQ, Integer
+from sage.all import EllipticCurve, QQ, Integer, PolynomialRing
 
 
 # ---------------------------------------------------------------
@@ -29,19 +35,16 @@ def inverse_transform(y1, y2, k, N):
     k = Fraction(k)
     N = Fraction(N)
 
-    # Step 9 inverse
     x1_star = 2 * k * (k**3 + 1) * N + 4 * k**2
     x1 = y1 + x1_star
     x2 = y2
 
-    # Step 6 inverse
     denom6 = k**3 + 1
     if denom6 == 0:
         return None
     w1 = -x1 / (2 * denom6)
     w2 = -x2 / denom6
 
-    # Step 5 inverse
     beta2 = w1**2 - k**2 * N**2 + 4 * k
     beta1 = (-2 * (k**3 + 1) * w1 * N - 2 * k * w1
              - 2 * (k**4 + k) * N**2 - 2 * k**2 * N + 4 * k**3 + 4)
@@ -49,11 +52,9 @@ def inverse_transform(y1, y2, k, N):
         return None
     v1 = (w2 - beta1) / (2 * beta2)
 
-    # Step 4 inverse
     L_v1 = (k**3 + 1) - ((k**3 + 1) * N + k) * v1
     v2 = L_v1 + v1**2 * w1
 
-    # Step 2 inverse
     u2 = v1
     alpha2 = -k**2 * u2 * N + (-k**3 * u2 + k**2 - u2)
     alpha1 = ((k * u2**2 - k**3 * u2 + u2) * N
@@ -62,7 +63,6 @@ def inverse_transform(y1, y2, k, N):
         return None
     u1 = (v2 - alpha1) / (2 * alpha2)
 
-    # Step 1 inverse
     a = u2 - k * u1
     b = u1
     c = Fraction(1)
@@ -94,20 +94,112 @@ def sign_of(v):
 
 
 def sign_pattern(abc):
-    """[a,b,c] -> [sign(a), sign(b), sign(c)]"""
     if abc is None:
         return None
     return [sign_of(v) for v in abc]
 
 
 def is_all_same_sign(abc):
-    """全符号一致 (全て正 or 全て負, ゼロは不可)"""
     if abc is None:
         return False
     s = sign_pattern(abc)
     if 0 in s:
         return False
     return s[0] == s[1] == s[2]
+
+
+def is_all_positive(abc):
+    """a, b, c 全て正"""
+    if abc is None:
+        return False
+    return all(v > 0 for v in abc)
+
+
+# ---------------------------------------------------------------
+# 卵成分判定（厳密、Q演算のみ）
+# ---------------------------------------------------------------
+def _to_short_weierstrass(E):
+    """E を短形式 Y^2 = X^3 + AX + B に変換し、(E_short, phi, A, B, Delta) を返す。
+    phi は E -> E_short の射。失敗時 None。"""
+    try:
+        E_short = E.short_weierstrass_model()
+        phi = E.isomorphism_to(E_short)
+        A = QQ(E_short.a4())
+        B = QQ(E_short.a6())
+        Delta = -16 * (4 * A**3 + 27 * B**2)
+        return E_short, phi, A, B, Delta
+    except Exception:
+        return None
+
+
+def has_egg_component(E):
+    """E(R) が卵成分（有界連結成分）を持つか。"""
+    info = _to_short_weierstrass(E)
+    if info is None:
+        return False
+    _, _, _, _, Delta = info
+    return Delta > 0
+
+
+def is_on_egg_component(P, short_info):
+    """点 P が E(R) の卵成分上にあるか厳密判定。
+    short_info: _to_short_weierstrass(E) の返り値。"""
+    if short_info is None:
+        return False
+    E_short, phi, A, B, Delta = short_info
+    if Delta <= 0:
+        return False
+    if P.is_zero():
+        return False
+    try:
+        P_short = phi(P)
+    except Exception:
+        return False
+    if P_short.is_zero():
+        return False
+    try:
+        xP = QQ(P_short.xy()[0])
+    except Exception:
+        return False
+    # x_P < sqrt(-A/3) ⟺ x_P ≤ 0 または 3·x_P² + A ≤ 0
+    if xP <= 0:
+        return True
+    if 3 * xP**2 + A <= 0:
+        return True
+    return False
+
+
+def can_reach_egg(E, free_gens, torsion_pts):
+    """生成元の整数結合（+ねじれ）で卵成分上の点が得られる可能性があるか。
+    - 単独 free generator が卵にある
+    - 単独 torsion が卵にある
+    - free + torsion で卵にある
+    のいずれか。"""
+    short_info = _to_short_weierstrass(E)
+    if short_info is None:
+        return False, None
+    _, _, _, _, Delta = short_info
+    if Delta <= 0:
+        return False, short_info
+
+    for g in free_gens:
+        if is_on_egg_component(g, short_info):
+            return True, short_info
+    for _, T in torsion_pts:
+        if is_on_egg_component(T, short_info):
+            return True, short_info
+    # free + torsion の単純な組み合わせ
+    for g in free_gens:
+        for _, T in torsion_pts:
+            try:
+                Q = g + T
+                if is_on_egg_component(Q, short_info):
+                    return True, short_info
+            except Exception:
+                continue
+    # 卵成分があるなら、倍々していけば理論上は到達可能（連結成分は群の指数2の部分群）
+    # ただし生成元が全て無限成分かつ卵2-torsionがない場合は到達不能
+    return False, short_info
 
 
 # ---------------------------------------------------------------
@@ -133,7 +225,6 @@ def coord_digits(x):
 # ねじれ部分群の構造化
 # ---------------------------------------------------------------
 def parse_torsion_structure(struct_str):
-    """例: '(2, 6)' -> [2, 6]"""
     if not struct_str:
         return []
     m = re.search(r'\(([0-9,\s]+)\)', struct_str)
@@ -154,7 +245,7 @@ def enumerate_torsion_points(E, torsion_gens, orders):
         return result
 
     coeff_ranges = [range(o) for o in orders]
-    seen = {}  # (x, y) -> (coeffs, point) で重複除去
+    seen = {}
     for coeffs in product(*coeff_ranges):
         if all(c == 0 for c in coeffs):
             continue
@@ -171,7 +262,6 @@ def enumerate_torsion_points(E, torsion_gens, orders):
 
 
 def is_torsion_generator(torsion_coeffs):
-    """torsion_coeffs が単位ベクトル (生成元単独) か"""
     if torsion_coeffs is None:
         return False
     nonzero = [(i, c) for i, c in enumerate(torsion_coeffs) if c != 0]
@@ -182,22 +272,10 @@ def is_torsion_generator(torsion_coeffs):
 # 点ロール判定
 # ---------------------------------------------------------------
 def classify_point(free_coeffs, torsion_coeffs):
-    """
-    free_coeffs: [m_1, ..., m_r] or [] (rank=0)
-    torsion_coeffs: [c_1, ...] or None
-
-    Returns one of:
-      "free_generator"     : +P_i 単独 (他成分0)
-      "combination"        : 自由部分のみで複数項 or -P_i
-      "torsion_generator"  : T_j 単独
-      "torsion_other"      : ねじれ部分の合成
-      "mixed"              : 自由 + ねじれ
-    """
     free_nonzero = [c for c in free_coeffs if c != 0] if free_coeffs else []
     has_torsion = torsion_coeffs is not None and any(c != 0 for c in torsion_coeffs)
 
     if not free_nonzero and not has_torsion:
-        # ありえない（単位元は除外済み）
         return "combination"
 
     if not free_nonzero and has_torsion:
@@ -210,12 +288,10 @@ def classify_point(free_coeffs, torsion_coeffs):
             return "free_generator"
         return "combination"
 
-    # 自由 + ねじれ
     return "mixed"
 
 
 def point_label(free_coeffs, torsion_coeffs):
-    """人間可読ラベル: '+P_1 + 2P_2 + T_1' など"""
     parts = []
     if free_coeffs:
         for i, c in enumerate(free_coeffs):
@@ -238,7 +314,6 @@ def point_label(free_coeffs, torsion_coeffs):
     if not parts:
         return "O"
     s = " ".join(parts)
-    # 先頭が "+" なら除去
     if s.startswith("+"):
         s = s[1:].lstrip()
     return s
@@ -248,34 +323,24 @@ def point_label(free_coeffs, torsion_coeffs):
 # y₁範囲の計算（plot_yj.txtの手法を移植）
 # ---------------------------------------------------------------
 def compute_y1_ranges(k, N, a_samples=400, a_max=1e8):
-    """
-    各ブランチ j=0,1,2 について、bⱼ(a) > 0 かつ a > 0 となる範囲での y₁ の [min, max] を計算
-    """
-    from fractions import Fraction
-    import cmath
-    
     k_f = float(k)
     N_f = float(N)
-    
-    # カルダノ公式で bⱼ(a) を計算
+
     def A3(a): return -k_f
     def A2(a): return k_f**2*N_f*a - k_f**2 + k_f*N_f - a
     def A1(a): return k_f**3*N_f*a - k_f**2*a**2 + k_f*N_f*a**2 + k_f**2*N_f - 3*k_f*a + N_f*a - 1
     def A0(a): return k_f**2*N_f*a**2 - k_f*a**3 - k_f**2*a + k_f*N_f*a - a**2 - k_f
-    
+
     omega = cmath.exp(2j*cmath.pi/3.0)
-    
+
     def bj_func(a, j):
-        """ブランチ j の bⱼ(a) を返す"""
         a = complex(a)
         A3v = complex(A3(a))
         A2v = complex(A2(a))
         A1v = complex(A1(a))
         A0v = complex(A0(a))
-        
         if abs(A3v) < 1e-15:
             return None
-        
         p2 = A2v/A3v
         p1 = A1v/A3v
         p0 = A0v/A3v
@@ -284,16 +349,13 @@ def compute_y1_ranges(k, N, a_samples=400, a_max=1e8):
         q = 2.0*p2**3/27.0 - p2*p1/3.0 + p0
         s = cmath.sqrt((q/2.0)**2 + (p/3.0)**3)
         C = (-q/2.0 + s)**(1.0/3.0)
-        
         if abs(C) < 1e-15:
             return -shift
-        
         wj = omega**j
         t = wj*C - p/(3.0*wj*C)
         return t - shift
-    
+
     def y1_ab(a, b):
-        """y₁(a, b) を計算"""
         a = complex(a)
         b = complex(b)
         num = ((-4*k_f**5 - 4*k_f**4*N_f - 8*k_f**2 - 4*k_f*N_f)*a**2
@@ -306,10 +368,8 @@ def compute_y1_ranges(k, N, a_samples=400, a_max=1e8):
         if abs(den) < 1e-12:
             return None
         return num/den
-    
-    # a のサンプリング（対数スケール + 線形スケール）
+
     try:
-        import numpy as np
         a_vals = np.unique(np.concatenate([
             np.geomspace(1e-6, a_max, a_samples),
             np.linspace(1e-6, 1000, a_samples),
@@ -318,19 +378,16 @@ def compute_y1_ranges(k, N, a_samples=400, a_max=1e8):
         a_vals = a_vals[a_vals > 0]
         a_vals = list(a_vals)
     except Exception as e_np:
-        # numpy が使えない場合は簡易サンプリング
         print(f"    numpy unavailable for k={k}, N={N}: {e_np}, using fallback sampling")
         a_vals = []
-        # 対数スケール
         for i in range(a_samples):
             a_vals.append(1e-6 * (10 ** (i * 14.0 / a_samples)))
-        # 線形スケール（小さい範囲を密に）
         for i in range(a_samples):
             a_vals.append(1e-6 + i * (1000.0 / a_samples))
         for i in range(a_samples // 2):
             a_vals.append(1e-6 + i * (10.0 / (a_samples // 2)))
         a_vals = sorted(set(a_vals))
-    
+
     ranges = []
     for j in range(3):
         valid_y1 = []
@@ -341,14 +398,13 @@ def compute_y1_ranges(k, N, a_samples=400, a_max=1e8):
                 b = bj_func(a_val, j)
                 if b is None:
                     continue
-                # 実数かつ正の条件を両方満たす
                 if abs(b.imag) < 1e-6 and b.real > 1e-9:
                     y1 = y1_ab(a_val, b.real)
                     if y1 is not None and abs(y1.imag) < 1e-6:
                         valid_y1.append(y1.real)
             except Exception:
                 continue
-        
+
         if valid_y1:
             ranges.append({
                 "branch": j,
@@ -361,12 +417,12 @@ def compute_y1_ranges(k, N, a_samples=400, a_max=1e8):
                 "y1_min": None,
                 "y1_max": None
             })
-    
+
     if all(r["y1_min"] is None for r in ranges):
         print(f"    Warning: k={k}, N={N} - no valid y1 ranges found for any branch")
-        print(f"             Tested {len(a_vals)} a-values, conditions: a>0, b.real>1e-9, b.imag<1e-6, y1.imag<1e-6")
-    
+
     return ranges
+
 
 # ---------------------------------------------------------------
 # y1 帯 (Cardano 閉形式 3 分岐) の計算
@@ -433,8 +489,6 @@ def compute_y1_bands(k, N,
                     tol_imag=1e-7,
                     tol_den=1e-8,
                     tol_y1_imag=1e-6):
-    """各分岐 j=0,1,2 について、b_j(a) が実かつ正となる a での
-    y1(a, b_j(a)) の [min, max] を返す。空なら None を入れる。"""
     try:
         b_funcs = _make_branch_funcs(k, N)
     except Exception:
@@ -490,10 +544,101 @@ def compute_y1_bands(k, N,
             })
     return bands
 
+
+# ---------------------------------------------------------------
+# 点生成ヘルパー（指定 M シェルでの点列挙）
+# ---------------------------------------------------------------
+def _build_point_record(P, free_coeffs, torsion_coeffs, k, N, digit_limit,
+                       short_info=None, include_order=False):
+    """P から1点分のレコードを作る。座標桁が制限を超えたら None。"""
+    if P.is_zero():
+        return None
+    try:
+        x, y = P.xy()
+    except Exception:
+        return None
+
+    x_f = Fraction(int(x.numerator()), int(x.denominator()))
+    y_f = Fraction(int(y.numerator()), int(y.denominator()))
+
+    if max(coord_digits(x_f), coord_digits(y_f)) > digit_limit:
+        return None
+
+    abc = inverse_transform(x_f, y_f, k, N)
+    role = classify_point(free_coeffs, torsion_coeffs)
+    label = point_label(free_coeffs, torsion_coeffs)
+    sp = sign_pattern(abc)
+    rec = {
+        "free_coeffs": list(free_coeffs) if free_coeffs else [],
+        "torsion_coeffs": torsion_coeffs,
+        "role": role,
+        "label": label,
+        "xy": [str(x), str(y)],
+        "abc": [str(v) for v in abc] if abc else None,
+        "sign_pattern": sp,
+        "all_same_sign": is_all_same_sign(abc),
+        "all_positive": is_all_positive(abc),
+    }
+    if short_info is not None:
+        rec["on_egg"] = is_on_egg_component(P, short_info)
+    if include_order:
+        try:
+            rec["order"] = int(P.order())
+        except Exception:
+            pass
+    return rec
+
+
+def _enumerate_shell(M_outer, M_inner, free_gens, torsion_variants,
+                    E, k, N, digit_limit, short_info):
+    """係数の max(|c_i|) == M_outer のシェル（M_inner より外側の殻）の点を列挙。
+    M_inner は「既に列挙済みの最大 M」（None なら最初から全部）。"""
+    rank = len(free_gens)
+    if rank == 0:
+        return []
+
+    coeff_ranges = [range(-M_outer, M_outer + 1)] * rank
+    results = []
+    for coeffs in product(*coeff_ranges):
+        if all(c == 0 for c in coeffs):
+            continue
+        # シェル判定: 少なくとも1成分が ±M_outer
+        max_abs = max(abs(c) for c in coeffs)
+        if M_inner is not None and max_abs <= M_inner:
+            continue
+        if max_abs != M_outer:
+            continue
+
+        try:
+            P = sum((c * g for c, g in zip(coeffs, free_gens)), E(0))
+        except Exception:
+            continue
+
+        for torsion_coeffs, T in torsion_variants:
+            if T is None:
+                Q = P
+                tc_record = None
+            else:
+                try:
+                    Q = P + T
+                except Exception:
+                    continue
+                tc_record = torsion_coeffs
+
+            if Q.is_zero():
+                continue
+
+            rec = _build_point_record(Q, list(coeffs), tc_record, k, N,
+                                     digit_limit, short_info=short_info)
+            if rec is not None:
+                results.append(rec)
+    return results
+
+
 # ---------------------------------------------------------------
 # 1曲線のエクスポート
 # ---------------------------------------------------------------
-def export_curve(row, target_points, digit_limit):
+def export_curve(row, target_points, digit_limit, m_extended_max=15):
     k = row["k"]
     N = row["n"]
     status = row["status"]
@@ -544,6 +689,19 @@ def export_curve(row, target_points, digit_limit):
         out["note"] = f"EllipticCurve construction failed: {e}"
         return out
 
+    # 短形式情報（卵成分判定用）
+    short_info = _to_short_weierstrass(E)
+    if short_info is not None:
+        _, _, A_short, B_short, Delta_short = short_info
+        out["short_weierstrass"] = {
+            "A": str(A_short),
+            "B": str(B_short),
+            "discriminant": str(Delta_short),
+            "has_egg_component": Delta_short > 0,
+        }
+    else:
+        out["short_weierstrass"] = None
+
     # 自由部分の生成元
     gens_raw = json.loads(row["gens"]) if row["gens"] else []
     try:
@@ -559,6 +717,7 @@ def export_curve(row, target_points, digit_limit):
             "index": i + 1,
             "label": f"P_{i+1}",
             "xy": [str(g.xy()[0]), str(g.xy()[1])],
+            "on_egg": is_on_egg_component(g, short_info),
         }
         for i, g in enumerate(free_gens)
     ]
@@ -579,11 +738,7 @@ def export_curve(row, target_points, digit_limit):
     except Exception:
         torsion_gens = []
 
-    # === 修正ここから ===
-    # Sage の T.invariants() と T.gens() は順序が一致しない場合があるため、
-    # 各生成元の実位数を直接取る
     orders = [int(g.order()) for g in torsion_gens]
-    # === 修正ここまで ===
 
     out["torsion_generators"] = [
         {
@@ -591,19 +746,24 @@ def export_curve(row, target_points, digit_limit):
             "label": f"T_{j+1}",
             "order": int(orders[j]),
             "xy": [str(tg.xy()[0]), str(tg.xy()[1])],
+            "on_egg": is_on_egg_component(tg, short_info),
         }
         for j, tg in enumerate(torsion_gens)
     ]
-    
-    # y1 帯 (Cardano 閉形式)
+
+    # y1 帯
     try:
         out["y1_bands"] = compute_y1_bands(k, N)
     except Exception as e:
         out["y1_bands"] = []
         out["y1_bands_note"] = f"compute failed: {e}"
 
-    # 全ねじれ点 (生成元の整数結合)
+    # 全ねじれ点
     torsion_pts = enumerate_torsion_points(E, torsion_gens, orders)
+
+    # 卵成分到達可能性
+    egg_reachable, _ = can_reach_egg(E, free_gens, torsion_pts)
+    out["egg_reachable"] = egg_reachable
 
     # 自由部分の係数を決定
     M = determine_M(rank, max(row["torsion_order"] or 1, 1),
@@ -612,93 +772,92 @@ def export_curve(row, target_points, digit_limit):
 
     points = []
 
-    # まず純粋ねじれ点 (自由部分はゼロ)
+    # まず純粋ねじれ点
     for torsion_coeffs, T in torsion_pts:
-        x, y = T.xy()
-        x_f = Fraction(int(x.numerator()), int(x.denominator()))
-        y_f = Fraction(int(y.numerator()), int(y.denominator()))
-        abc = inverse_transform(x_f, y_f, k, N)
-        free_coeffs = [0] * rank
-        role = classify_point(free_coeffs, torsion_coeffs)
-        label = point_label(free_coeffs, torsion_coeffs)
-        sp = sign_pattern(abc)
-        pt = {
-            "free_coeffs": free_coeffs,
-            "torsion_coeffs": torsion_coeffs,
-            "role": role,
-            "label": label,
-            "xy": [str(x), str(y)],
-            "abc": [str(v) for v in abc] if abc else None,
-            "sign_pattern": sp,
-            "all_same_sign": is_all_same_sign(abc),
-            "order": int(T.order()),
-        }
-        points.append(pt)
+        rec = _build_point_record(T, [0] * rank, torsion_coeffs, k, N,
+                                 digit_limit, short_info=short_info,
+                                 include_order=True)
+        if rec is not None:
+            points.append(rec)
 
     # 自由部分 + (ねじれを足したバリアント)
+    torsion_variants = [(None, None)] + [(tc, T) for tc, T in torsion_pts]
+
     if rank > 0:
-        coeff_ranges = [range(-M, M + 1)] * rank
-        torsion_variants = [(None, None)] + [(tc, T) for tc, T in torsion_pts]
+        # M=1, 2, ..., M まで段階的にシェルを足す
+        for M_curr in range(1, M + 1):
+            shell_pts = _enumerate_shell(
+                M_curr, M_curr - 1 if M_curr > 0 else None,
+                free_gens, torsion_variants, E, k, N, digit_limit, short_info
+            )
+            points.extend(shell_pts)
 
-        for coeffs in product(*coeff_ranges):
-            if all(c == 0 for c in coeffs):
-                continue
-            try:
-                P = sum((c * g for c, g in zip(coeffs, free_gens)), E(0))
-            except Exception:
-                continue
+    # ----------------------------------------------------------
+    # adaptive 拡張: k>0, N>0 で正符号点が未発見 かつ 卵到達可能なら粘る
+    # ----------------------------------------------------------
+    search_status = "initial"
+    found_positive_at_M = None
 
-            for torsion_coeffs, T in torsion_variants:
-                if T is None:
-                    Q = P
-                    tc_record = None
-                else:
-                    Q = P + T
-                    tc_record = torsion_coeffs
+    # 初期 M で正符号点が見つかったか
+    if any(p["all_positive"] for p in points):
+        search_status = "found_in_initial"
+        # どの M で見つかったかを記録
+        for p in points:
+            if p["all_positive"]:
+                fc = p.get("free_coeffs") or []
+                m_used = max((abs(c) for c in fc), default=0)
+                if found_positive_at_M is None or m_used < found_positive_at_M:
+                    found_positive_at_M = m_used
 
-                if Q.is_zero():
-                    continue
-                try:
-                    x, y = Q.xy()
-                except Exception:
-                    continue
+    should_extend = (
+        k > 0 and N > 0
+        and rank > 0
+        and not any(p["all_positive"] for p in points)
+        and egg_reachable
+        and M < m_extended_max
+    )
 
-                x_f = Fraction(int(x.numerator()), int(x.denominator()))
-                y_f = Fraction(int(y.numerator()), int(y.denominator()))
+    if should_extend:
+        search_status = "extending"
+        M_final = M
+        for M_curr in range(M + 1, m_extended_max + 1):
+            shell_pts = _enumerate_shell(
+                M_curr, M_curr - 1,
+                free_gens, torsion_variants, E, k, N, digit_limit, short_info
+            )
+            points.extend(shell_pts)
+            M_final = M_curr
+            if any(p["all_positive"] for p in shell_pts):
+                found_positive_at_M = M_curr
+                search_status = "found_in_extension"
+                break
+        else:
+            search_status = "extension_exhausted"
+        out["M_extended"] = M_final
+    elif k > 0 and N > 0 and not any(p["all_positive"] for p in points):
+        if not egg_reachable:
+            search_status = "no_egg_access"
+        elif rank == 0:
+            search_status = "rank_zero"
+        else:
+            search_status = "skipped"
 
-                if max(coord_digits(x_f), coord_digits(y_f)) > digit_limit:
-                    continue
-
-                abc = inverse_transform(x_f, y_f, k, N)
-                free_coeffs = list(coeffs)
-                role = classify_point(free_coeffs, tc_record)
-                label = point_label(free_coeffs, tc_record)
-                sp = sign_pattern(abc)
-                pt = {
-                    "free_coeffs": free_coeffs,
-                    "torsion_coeffs": tc_record,
-                    "role": role,
-                    "label": label,
-                    "xy": [str(x), str(y)],
-                    "abc": [str(v) for v in abc] if abc else None,
-                    "sign_pattern": sp,
-                    "all_same_sign": is_all_same_sign(abc),
-                }
-                points.append(pt)
+    out["search_status"] = search_status
+    out["found_positive_at_M"] = found_positive_at_M
 
     out["points"] = points
     out["points_count"] = len(points)
     out["has_same_sign_point"] = any(p["all_same_sign"] for p in points)
-    
-    # y₁範囲の計算を追加
+    out["has_positive_point"] = any(p["all_positive"] for p in points)
+
+    # y₁範囲の数値計算
     try:
         y1_ranges = compute_y1_ranges(k, N)
         out["y1_ranges"] = y1_ranges
     except Exception as e:
         out["y1_ranges"] = []
-        # 失敗してもエラーにはしない（オプショナル機能）
         print(f"    Warning: y1_ranges computation failed for k={k}, N={N}: {e}")
-    
+
     return out
 
 
@@ -712,6 +871,8 @@ def main():
     parser.add_argument("--target-points", type=int, default=100)
     parser.add_argument("--digit-limit", type=int, default=200,
                         help="座標の桁数上限（超えたら線形結合を打ち切り）")
+    parser.add_argument("--m-extended-max", type=int, default=15,
+                        help="adaptive 拡張時の M 上限 (k>0,N>0 かつ卵到達可能時)")
     parser.add_argument("--skip-existing", action="store_true")
     args = parser.parse_args()
 
@@ -745,13 +906,15 @@ def main():
             index["cells"][key] = {
                 "status": row["status"],
                 "rank": row["rank"],
-                "has_same_sign_point": False,  # 不明のまま
+                "has_same_sign_point": False,
+                "has_positive_point": False,
             }
             print(f"[{i}/{total}] skip {key}")
             continue
 
         try:
-            data = export_curve(row, args.target_points, args.digit_limit)
+            data = export_curve(row, args.target_points, args.digit_limit,
+                              m_extended_max=args.m_extended_max)
         except Exception as e:
             print(f"[{i}/{total}] ERROR {key}: {e}")
             data = {
@@ -767,10 +930,15 @@ def main():
             "status": row["status"],
             "rank": row["rank"] if row["rank"] is not None else None,
             "has_same_sign_point": data.get("has_same_sign_point", False),
+            "has_positive_point": data.get("has_positive_point", False),
+            "egg_reachable": data.get("egg_reachable", False),
+            "search_status": data.get("search_status", None),
         }
         pc = data.get("points_count", 0)
-        print(f"[{i}/{total}] {key} status={row['status']} "
-              f"points={pc} same_sign={data.get('has_same_sign_point', False)}")
+        ss = data.get("search_status", "-")
+        print(f"[{i}/{total}] {key} status={row['status']} rank={row['rank']} "
+              f"points={pc} pos={data.get('has_positive_point', False)} "
+              f"egg={data.get('egg_reachable', False)} search={ss}")
 
     with open(os.path.join(args.out, "index.json"), "w") as f:
         json.dump(index, f, ensure_ascii=False, indent=2)
